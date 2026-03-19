@@ -368,7 +368,7 @@ class MentraApp extends TpaServer {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, sessionKey: randomUUID(), accountId: ACCOUNT_ID }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(120_000),
       });
 
       if (!res.ok) throw new Error(`IPC error ${res.status}`);
