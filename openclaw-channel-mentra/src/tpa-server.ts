@@ -260,7 +260,7 @@ class MentraApp extends TpaServer {
 
     if (text.trimEnd().endsWith("?") && this.followUpCount < MAX_FOLLOW_UPS) {
       this.followUpCount++;
-      this.gotoListening("", MS.FOLLOW_UP_INITIAL);
+      this.gotoListening("", "...", MS.FOLLOW_UP_INITIAL);
     } else {
       this.followUpCount = 0;
       this.transition("TRIGGERED");
