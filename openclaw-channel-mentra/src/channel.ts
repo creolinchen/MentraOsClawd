@@ -1,42 +1,20 @@
 /**
- * Mentra channel — self-contained plugin.
+ * channel.ts — OpenClaw ChannelPlugin für MentraOS G2 Smart Glasses.
  *
- * Starts a TpaServer (MentraOS SDK) that connects directly to the glasses.
- * Transcription -> state machine -> OpenClaw agent dispatch -> glasses display.
+ * Spawnt tpa-server.ts als eigenen Bun-Kindprozess.
+ * Dispatch läuft über lokalen IPC-HTTP-Server im Gateway-Prozess.
  */
 
-import { TpaServer } from "@mentra/sdk";
-import type { TpaSession } from "@mentra/sdk";
 import type { ChannelPlugin } from "openclaw/plugin-sdk";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { mentraOnboarding } from "./onboarding.js";
 
-// ── Constants ────────────────────────────────────────────────────────────────
-
 const CHANNEL_ID = "mentra";
-
-const GREETING_WORDS = [
-  "guten morgen", "guten abend", "guten tag", "grüß gott",
-  "hallo", "servus", "howdy", "aloha", "salut",
-  "moin", "ahoi", "ciao", "jojo", "hey", "hi", "na", "yo",
-] as const;
-
-const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
-
-const MS = {
-  TRIGGERED_TIMEOUT: 5_000,
-  SILENCE: 2_000,
-  POST_RESPONSE: 14_000,
-  FOLLOW_UP_INITIAL: 6_000,
-  SPINNER: 120,
-} as const;
-
-const MAX_FOLLOW_UPS = 10;
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-type MainState = "IDLE" | "TRIGGERED" | "LISTENING" | "PROCESSING";
-type AppState = MainState | "APPROVAL";
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export interface MentraAccount {
   accountId: string;
@@ -47,424 +25,88 @@ export interface MentraAccount {
   configured: boolean;
 }
 
-// ── TpaServer + state machine ─────────────────────────────────────────────────
+// ── IPC dispatch ──────────────────────────────────────────────────────────────
 
-class MentraG2Server extends TpaServer {
-  private readonly channelRuntime: any;
-  private readonly cfg: any;
-  private readonly accountId: string;
+async function dispatchToOpenClaw(
+  cr: any,
+  cfg: any,
+  accountId: string,
+  prompt: string,
+  sessionKey: string
+): Promise<string> {
+  if (!cr) return "";
 
-  private state: AppState = "IDLE";
-  private stateBeforeApproval: MainState = "IDLE";
-  private session: TpaSession | null = null;
-  private promptAccumulator = "";
-  private greetingWord = "";
-  private followUpCount = 0;
-  private activeRequestId: string | null = null;
-  private pendingApproval: { id: string; command: string } | null = null;
-
-  private timers: {
-    silence?: ReturnType<typeof setTimeout>;
-    trigger?: ReturnType<typeof setTimeout>;
-    postResponse?: ReturnType<typeof setTimeout>;
-    followUp?: ReturnType<typeof setTimeout>;
-    approval?: ReturnType<typeof setTimeout>;
-  } = {};
-  private spinnerTimer: ReturnType<typeof setInterval> | null = null;
-  private spinnerFrame = 0;
-
-  constructor(
-    serverConfig: { packageName: string; apiKey: string; port?: number },
-    channelRuntime: any,
-    cfg: any,
-    accountId: string
-  ) {
-    super(serverConfig);
-    this.channelRuntime = channelRuntime;
-    this.cfg = cfg;
-    this.accountId = accountId;
-  }
-
-  // ── SDK lifecycle ────────────────────────────────────────────────────────────
-
-  protected async onSession(
-    session: TpaSession,
-    _sessionId: string,
-    _userId: string
-  ): Promise<void> {
-    this.session = session;
-    this.hardReset();
-
-    session.events.onTranscription((data) => {
-      const lower = (data.text ?? "").toLowerCase().trim();
-      const isFinal = data.isFinal ?? true;
-
-      if (this.state === "APPROVAL") {
-        if (isFinal) this.handleApprovalTranscription(lower);
-        return;
-      }
-
-      this.onTranscription(data.text ?? "", isFinal);
+  try {
+    const route = cr.routing.resolveAgentRoute({
+      cfg,
+      channel: CHANNEL_ID,
+      accountId,
+      peer: { kind: "direct", id: sessionKey },
     });
 
-    session.events.onDisconnected(() => {
-      this.hardReset();
-      this.session = null;
+    const inboundCtx = cr.reply.finalizeInboundContext({
+      Body: prompt,
+      BodyForAgent: prompt,
+      RawBody: prompt,
+      CommandBody: prompt,
+      From: `mentra:${sessionKey}`,
+      To: sessionKey,
+      SessionKey: route.sessionKey,
+      AccountId: route.accountId,
+      ChatType: "direct",
+      ConversationLabel: `mentra:${sessionKey}`,
+      SenderName: "User",
+      SenderId: sessionKey,
+      Provider: CHANNEL_ID,
+      Surface: CHANNEL_ID,
+      WasMentioned: true,
+      MessageSid: `mentra-${Date.now()}`,
+      Timestamp: Date.now(),
+      CommandAuthorized: true,
+      OriginatingChannel: CHANNEL_ID,
+      OriginatingTo: sessionKey,
     });
 
-    this.display("Mentra bereit");
-  }
-
-  // ── Display ──────────────────────────────────────────────────────────────────
-
-  private display(text: string): void {
-    if (!this.session) return;
-    try {
-      this.session.layouts.showTextWall(text);
-    } catch (err) {
-      console.error("[mentra] Display error:", err);
-    }
-  }
-
-  private startSpinner(): void {
-    this.spinnerFrame = 0;
-    this.spinnerTimer = setInterval(() => {
-      this.spinnerFrame = (this.spinnerFrame + 1) % BRAILLE_FRAMES.length;
-      this.display(BRAILLE_FRAMES[this.spinnerFrame]);
-    }, MS.SPINNER);
-  }
-
-  private stopSpinner(): void {
-    if (this.spinnerTimer !== null) {
-      clearInterval(this.spinnerTimer);
-      this.spinnerTimer = null;
-    }
-  }
-
-  // ── Timer helpers ─────────────────────────────────────────────────────────────
-
-  private clearTimer(name: keyof typeof this.timers): void {
-    if (this.timers[name] !== undefined) {
-      clearTimeout(this.timers[name]!);
-      delete this.timers[name];
-    }
-  }
-
-  private clearAllTimers(): void {
-    for (const k of Object.keys(this.timers) as (keyof typeof this.timers)[]) {
-      this.clearTimer(k);
-    }
-  }
-
-  private hardReset(): void {
-    this.clearAllTimers();
-    this.stopSpinner();
-    this.state = "IDLE";
-    this.promptAccumulator = "";
-    this.greetingWord = "";
-    this.followUpCount = 0;
-    this.activeRequestId = null;
-    this.pendingApproval = null;
-  }
-
-  // ── State transitions ─────────────────────────────────────────────────────────
-
-  private transition(next: AppState): void {
-    console.log(`[mentra] ${this.state} -> ${next}`);
-    this.state = next;
-  }
-
-  private gotoIdle(): void {
-    this.clearAllTimers();
-    this.stopSpinner();
-    this.promptAccumulator = "";
-    this.greetingWord = "";
-    this.followUpCount = 0;
-    this.transition("IDLE");
-    this.display("Mentra bereit");
-  }
-
-  private gotoTriggered(greeting: string): void {
-    this.clearTimer("postResponse");
-    this.clearTimer("silence");
-    this.clearTimer("followUp");
-    this.stopSpinner();
-    this.promptAccumulator = "";
-    this.greetingWord = greeting;
-    this.transition("TRIGGERED");
-    this.display(greeting);
-
-    this.clearTimer("trigger");
-    this.timers.trigger = setTimeout(() => {
-      if (this.state === "TRIGGERED") this.gotoIdle();
-    }, MS.TRIGGERED_TIMEOUT);
-  }
-
-  private gotoListening(initialPrompt = "", followUpTimeout = 0): void {
-    this.clearTimer("trigger");
-    this.clearTimer("postResponse");
-    this.clearTimer("followUp");
-    this.stopSpinner();
-    this.promptAccumulator = initialPrompt;
-    this.transition("LISTENING");
-    this.display("Hey Mentra");
-
-    if (followUpTimeout > 0) {
-      this.timers.followUp = setTimeout(() => {
-        if (this.state === "LISTENING" && this.promptAccumulator === "") {
-          this.gotoIdle();
-        }
-      }, followUpTimeout);
-    }
-
-    this.resetSilenceTimer();
-  }
-
-  private gotoProcessing(): void {
-    this.clearTimer("silence");
-    this.clearTimer("followUp");
-    this.transition("PROCESSING");
-    this.startSpinner();
-
-    const prompt = this.promptAccumulator.trim();
-    this.promptAccumulator = "";
-
-    if (!prompt) {
-      this.gotoIdle();
-      return;
-    }
-
-    const requestId = randomUUID();
-    this.activeRequestId = requestId;
-
-    void this.dispatchPrompt(prompt, requestId);
-  }
-
-  private resetSilenceTimer(): void {
-    this.clearTimer("silence");
-    this.timers.silence = setTimeout(() => {
-      if (this.state === "LISTENING") this.gotoProcessing();
-    }, MS.SILENCE);
-  }
-
-  // ── Transcription handler ─────────────────────────────────────────────────────
-
-  private onTranscription(text: string, isFinal: boolean): void {
-    const lower = text.toLowerCase().trim();
-    if (!lower) return;
-
-    switch (this.state) {
-      case "IDLE":
-        if (isFinal) this.handleIdleTranscription(lower, text.trim());
-        break;
-
-      case "TRIGGERED":
-        if (isFinal) this.handleTriggeredTranscription(lower);
-        break;
-
-      case "LISTENING":
-        this.resetSilenceTimer();
-        this.clearTimer("followUp");
-        if (isFinal) {
-          this.promptAccumulator +=
-            (this.promptAccumulator ? " " : "") + text.trim();
-        }
-        break;
-
-      case "PROCESSING":
-        if (isFinal && this.containsMentra(lower) && this.hasGreeting(lower)) {
-          this.activeRequestId = null;
-          this.gotoTriggered(this.extractGreeting(lower));
-        }
-        break;
-    }
-  }
-
-  private handleIdleTranscription(lower: string, original: string): void {
-    const greeting = this.extractGreeting(lower);
-    if (!greeting) return;
-
-    if (this.containsMentra(lower)) {
-      const afterMentra = this.extractAfterMentra(lower, original);
-      this.gotoListening(afterMentra);
-      return;
-    }
-
-    this.gotoTriggered(greeting);
-  }
-
-  private handleTriggeredTranscription(lower: string): void {
-    if (this.containsMentra(lower)) {
-      this.gotoListening();
-      return;
-    }
-    const greeting = this.extractGreeting(lower);
-    if (greeting) {
-      this.gotoTriggered(greeting);
-      return;
-    }
-    this.gotoIdle();
-  }
-
-  // ── OpenClaw dispatch ─────────────────────────────────────────────────────────
-
-  private async dispatchPrompt(prompt: string, requestId: string): Promise<void> {
-    const cr = this.channelRuntime;
-    if (!cr) {
-      console.error("[mentra] channelRuntime not available — cannot dispatch");
-      if (this.activeRequestId === requestId) this.gotoIdle();
-      return;
-    }
-
-    const cfg = this.cfg;
-    const sessionKey = randomUUID();
-
-    try {
-      const route = cr.routing.resolveAgentRoute({
-        cfg,
-        channel: CHANNEL_ID,
-        accountId: this.accountId,
-        peer: { kind: "direct", id: sessionKey },
-      });
-
-      const inboundCtx = cr.reply.finalizeInboundContext({
-        Body: prompt,
-        BodyForAgent: prompt,
-        RawBody: prompt,
-        CommandBody: prompt,
-        From: `mentra:${sessionKey}`,
-        To: sessionKey,
-        SessionKey: route.sessionKey,
-        AccountId: route.accountId,
-        ChatType: "direct",
-        ConversationLabel: `mentra:${sessionKey}`,
-        SenderName: "User",
-        SenderId: sessionKey,
-        Provider: CHANNEL_ID,
-        Surface: CHANNEL_ID,
-        WasMentioned: true,
-        MessageSid: `mentra-${Date.now()}`,
-        Timestamp: Date.now(),
-        CommandAuthorized: true,
-        OriginatingChannel: CHANNEL_ID,
-        OriginatingTo: sessionKey,
-      });
-
-      const storePath = cr.session.resolveStorePath(undefined, { agentId: route.agentId });
-      await cr.session.recordInboundSession({
-        storePath,
+    const storePath = cr.session.resolveStorePath(undefined, { agentId: route.agentId });
+    await cr.session.recordInboundSession({
+      storePath,
+      sessionKey: route.sessionKey,
+      ctx: inboundCtx,
+      updateLastRoute: {
         sessionKey: route.sessionKey,
-        ctx: inboundCtx,
-        updateLastRoute: {
-          sessionKey: route.sessionKey,
-          channel: CHANNEL_ID,
-          to: sessionKey,
-          accountId: route.accountId,
-        },
-        onRecordError: (err: unknown) => {
-          console.warn(`[mentra] Session record error: ${String(err)}`);
-        },
-      });
+        channel: CHANNEL_ID,
+        to: sessionKey,
+        accountId: route.accountId,
+      },
+      onRecordError: (err: unknown) => {
+        console.warn(`[mentra] session record error: ${String(err)}`);
+      },
+    });
 
-      await cr.reply.dispatchReplyWithBufferedBlockDispatcher({
-        ctx: inboundCtx,
-        cfg,
-        dispatcherOptions: {
-          deliver: async (payload: any) => {
-            if (this.activeRequestId !== requestId) return;
-            const text: string = payload.text ?? payload.body ?? "";
-            if (text) this.handleAgentResponse(text);
+    return await new Promise<string>((resolve) => {
+      cr.reply
+        .dispatchReplyWithBufferedBlockDispatcher({
+          ctx: inboundCtx,
+          cfg,
+          dispatcherOptions: {
+            deliver: async (payload: any) => {
+              const text: string = payload.text ?? payload.body ?? "";
+              if (text) resolve(text);
+            },
+            onError: (err: unknown) => {
+              console.error(`[mentra] dispatch error: ${String(err)}`);
+              resolve("");
+            },
           },
-          onError: (err: unknown) => {
-            console.error(`[mentra] Dispatch error: ${String(err)}`);
-            if (this.activeRequestId === requestId) this.gotoIdle();
-          },
-        },
-      });
-    } catch (err) {
-      console.error(`[mentra] dispatchPrompt threw: ${String(err)}`);
-      if (this.activeRequestId === requestId) this.gotoIdle();
-    }
-  }
-
-  private handleAgentResponse(text: string): void {
-    this.activeRequestId = null;
-    this.stopSpinner();
-    this.display(text);
-
-    const endsWithQuestion = text.trimEnd().endsWith("?");
-
-    if (endsWithQuestion && this.followUpCount < MAX_FOLLOW_UPS) {
-      this.followUpCount++;
-      this.gotoListening("", MS.FOLLOW_UP_INITIAL);
-    } else {
-      this.followUpCount = 0;
-      this.transition("TRIGGERED");
-      this.timers.postResponse = setTimeout(() => {
-        if (this.state === "TRIGGERED") this.gotoIdle();
-      }, MS.POST_RESPONSE);
-    }
-  }
-
-  // ── Approval ──────────────────────────────────────────────────────────────────
-
-  private handleApprovalTranscription(lower: string): void {
-    if (!this.pendingApproval) return;
-
-    if (lower.includes("info")) {
-      this.display(`[A] ${this.pendingApproval.command}?`);
-      setTimeout(() => {
-        if (this.state === "APPROVAL") this.display("[A]");
-      }, 6_000);
-      return;
-    }
-
-    if (lower.includes("ja") && !lower.includes("nein")) {
-      this.resolveApproval("allow-once");
-    } else if (lower.includes("nein")) {
-      this.resolveApproval("deny");
-    }
-  }
-
-  private resolveApproval(decision: "allow-once" | "deny"): void {
-    if (!this.pendingApproval) return;
-    this.clearTimer("approval");
-    this.pendingApproval = null;
-
-    const restored = this.stateBeforeApproval;
-    this.stateBeforeApproval = "IDLE";
-
-    if (restored === "PROCESSING") {
-      this.transition("PROCESSING");
-      this.startSpinner();
-    } else if (restored === "LISTENING") {
-      this.gotoListening();
-    } else {
-      this.gotoIdle();
-    }
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────────
-
-  private hasGreeting(lower: string): boolean {
-    return GREETING_WORDS.some((g) => lower.includes(g));
-  }
-
-  private containsMentra(lower: string): boolean {
-    return lower.includes("mentra");
-  }
-
-  private extractGreeting(lower: string): string {
-    for (const g of GREETING_WORDS) {
-      if (lower.includes(g)) return g;
-    }
+        })
+        .catch((err: unknown) => {
+          console.error(`[mentra] dispatch threw: ${String(err)}`);
+          resolve("");
+        });
+    });
+  } catch (err) {
+    console.error(`[mentra] dispatch setup error: ${String(err)}`);
     return "";
-  }
-
-  private extractAfterMentra(lower: string, original: string): string {
-    const idx = lower.indexOf("mentra");
-    if (idx === -1) return "";
-    return original.slice(idx + "mentra".length).replace(/^[,.:!?\s]+/, "").trim();
   }
 }
 
@@ -526,7 +168,7 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
       const account = ctx.account as MentraAccount;
 
       if (!account.configured) {
-        ctx.log?.warn?.("[mentra] Not configured — skipping TpaServer start");
+        ctx.log?.warn?.("[mentra] not configured — skipping");
         await new Promise<void>((resolve) => {
           if (ctx.abortSignal.aborted) { resolve(); return; }
           ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
@@ -534,55 +176,78 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
         return;
       }
 
-      const channelRuntime = (ctx as any).channelRuntime ?? null;
-      if (!channelRuntime) {
-        ctx.log?.warn?.("[mentra] channelRuntime not available — dispatch will be disabled");
-      }
+      const cr = (ctx as any).channelRuntime ?? null;
+      if (!cr) ctx.log?.warn?.("[mentra] channelRuntime unavailable — dispatch disabled");
 
-      ctx.log?.info?.(
-        `[mentra] Starting TpaServer on port ${account.mentraServerPort} for ${account.mentraPackageName}`
-      );
+      // ── IPC HTTP server (loopback only) ───────────────────────────────────────
 
-      let server: MentraG2Server | null = null;
+      const ipcServer = createServer(async (req, res) => {
+        if (req.method !== "POST" || req.url !== "/dispatch") {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
 
-      try {
-        server = new MentraG2Server(
-          {
-            packageName: account.mentraPackageName,
-            apiKey: account.mentraApiKey,
-            port: account.mentraServerPort,
-          },
-          channelRuntime,
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk as Buffer);
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+
+        const text = await dispatchToOpenClaw(
+          cr,
           ctx.cfg,
-          account.accountId
+          account.accountId,
+          body.prompt,
+          body.sessionKey ?? randomUUID()
         );
 
-        await server.start();
-        ctx.log?.info?.("[mentra] TpaServer running — waiting for glasses to connect");
-      } catch (err) {
-        ctx.log?.error?.(`[mentra] TpaServer failed to start: ${String(err)}`);
-        // Stop immediately to kill any internal retry loops
-        if (server) {
-          try { await server.stop(); } catch (_) {}
-          server = null;
-        }
-        // Don't crash the gateway — just wait for abort
-      }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ text }));
+      });
+
+      const ipcPort = await new Promise<number>((resolve, reject) => {
+        ipcServer.listen(0, "127.0.0.1", () => {
+          const addr = ipcServer.address();
+          if (addr && typeof addr === "object") resolve(addr.port);
+          else reject(new Error("IPC server address unavailable"));
+        });
+      });
+
+      ctx.log?.info?.(`[mentra] IPC server on port ${ipcPort}`);
+
+      // ── Spawn TpaServer child process ─────────────────────────────────────────
+
+      const tpaScriptPath = join(__dirname, "tpa-server.ts");
+      const child = spawn("bun", ["run", tpaScriptPath], {
+        env: {
+          ...process.env,
+          IPC_PORT: String(ipcPort),
+          MENTRA_PACKAGE_NAME: account.mentraPackageName,
+          MENTRA_API_KEY: account.mentraApiKey,
+          MENTRA_SERVER_PORT: String(account.mentraServerPort),
+          MENTRA_ACCOUNT_ID: account.accountId,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      child.stdout?.on("data", (d: Buffer) => process.stdout.write(d));
+      child.stderr?.on("data", (d: Buffer) => process.stderr.write(d));
+      child.on("exit", (code) => {
+        ctx.log?.info?.(`[mentra] child exited with code ${code}`);
+      });
+
+      ctx.log?.info?.(`[mentra] spawned TpaServer child (pid ${child.pid})`);
+
+      // ── Wait for abort ────────────────────────────────────────────────────────
 
       await new Promise<void>((resolve) => {
         if (ctx.abortSignal.aborted) { resolve(); return; }
         ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
       });
 
-      if (server) {
-        try {
-          await server.stop();
-        } catch (err) {
-          ctx.log?.warn?.(`[mentra] TpaServer stop error: ${String(err)}`);
-        }
-      }
+      child.kill("SIGTERM");
+      ipcServer.close();
 
-      ctx.log?.info?.("[mentra] TpaServer stopped");
+      ctx.log?.info?.("[mentra] shutdown complete");
     },
   },
 };
