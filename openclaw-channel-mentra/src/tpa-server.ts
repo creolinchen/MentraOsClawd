@@ -163,6 +163,10 @@ class MentraApp extends TpaServer {
     this.display("");
   }
 
+  private capitalize(s: string): string {
+    return s.split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+  }
+
   private gotoTriggered(greeting: string): void {
     this.clearTimer("postResponse");
     this.clearTimer("silence");
@@ -171,7 +175,7 @@ class MentraApp extends TpaServer {
     this.promptAccumulator = "";
     this.greetingWord = greeting;
     this.transition("TRIGGERED");
-    this.display(greeting);
+    this.display(this.capitalize(greeting));
     this.clearTimer("trigger");
     this.timers.trigger = setTimeout(() => { if (this.state === "TRIGGERED") this.gotoIdle(); }, MS.TRIGGERED_TIMEOUT);
   }
@@ -343,14 +347,14 @@ class MentraApp extends TpaServer {
     if (!greeting) return;
     if (lower.includes("mentra")) {
       const after = original.slice(original.toLowerCase().indexOf("mentra") + 6).replace(/^[,.:!?\s]+/, "").trim();
-      this.gotoListening(after, `${greeting} mentra`);
+      this.gotoListening(after, `${this.capitalize(greeting)}, Mentra`);
     } else {
       this.gotoTriggered(greeting);
     }
   }
 
   private handleTriggered(lower: string): void {
-    if (lower.includes("mentra")) { this.gotoListening("", `${this.greetingWord} mentra`); return; }
+    if (lower.includes("mentra")) { this.gotoListening("", `${this.capitalize(this.greetingWord)}, Mentra`); return; }
     const greeting = this.extractGreeting(lower);
     if (greeting) { this.gotoTriggered(greeting); return; }
     this.gotoIdle();
