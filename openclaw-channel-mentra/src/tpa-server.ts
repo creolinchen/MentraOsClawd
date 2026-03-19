@@ -218,7 +218,7 @@ class MentraApp extends TpaServer {
     if (!greeting) return;
     if (lower.includes("mentra")) {
       const after = original.slice(original.toLowerCase().indexOf("mentra") + 6).replace(/^[,.:!?\s]+/, "").trim();
-      this.gotoListening(after);
+      this.gotoListening(after, `${greeting} mentra`);
     } else {
       this.gotoTriggered(greeting);
     }
