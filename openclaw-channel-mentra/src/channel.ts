@@ -45,9 +45,11 @@ async function dispatchToOpenClaw(
       peer: { kind: "direct", id: sessionKey },
     });
 
+    const systemInstruction = "Antworte extrem kurz und direkt (1-2 Sätze max). Kein Denken, keine Erklärungen, keine Aufzählungen. Nur die finale Antwort.";
+
     const inboundCtx = cr.reply.finalizeInboundContext({
       Body: prompt,
-      BodyForAgent: prompt,
+      BodyForAgent: `${systemInstruction}\n\n${prompt}`,
       RawBody: prompt,
       CommandBody: prompt,
       From: `mentra:${sessionKey}`,
