@@ -12,8 +12,8 @@
 
 import "dotenv/config";
 import express from "express";
-import { AppServer } from "@mentra/sdk";
-import type { AppAppSession } from "@mentra/sdk";
+import { TpaServer } from "@mentra/sdk";
+import type { TpaSession } from "@mentra/sdk";
 import { PluginClient } from "./plugin-client.js";
 import type { ApprovalDecision } from "./plugin-client.js";
 import { randomUUID } from "node:crypto";
@@ -72,13 +72,13 @@ interface ResponsePayload {
 
 // ── App ──────────────────────────────────────────────────────────────────────
 
-class MentraG2 extends AppServer {
+class MentraG2 extends TpaServer {
   // --- State machine ----------------------------------------------------------
   private state: AppState = "IDLE";
   private stateBeforeApproval: MainState = "IDLE";
 
-  // --- AppSession context --------------------------------------------------------
-  private session: AppSession | null = null;
+  // --- TpaSession context --------------------------------------------------------
+  private session: TpaSession | null = null;
 
   // --- Listening context ------------------------------------------------------
   private promptAccumulator = "";
@@ -478,7 +478,7 @@ class MentraG2 extends AppServer {
   // duplicating the whole switch.
   // NOTE: onTranscription already returns early for APPROVAL.
   // We handle APPROVAL keywords here via a separate path registered in
-  // onAppSession to keep the state machine clean.
+  // onTpaSession to keep the state machine clean.
   private handleApprovalTranscription(lower: string): void {
     if (this.state !== "APPROVAL" || !this.pendingApproval) return;
 
@@ -504,14 +504,14 @@ class MentraG2 extends AppServer {
 
   // ── SDK lifecycle override — wire up APPROVAL transcription routing ───────────
 
-  protected override async onAppSession(
-    session: AppSession,
+  protected override async onTpaSession(
+    session: TpaSession,
     sessionId: string,
     userId: string
   ): Promise<void> {
-    console.log(`[mentra-g2] AppSession started: ${sessionId}`);
+    console.log(`[mentra-g2] TpaSession started: ${sessionId}`);
     this.session = session;
-    this.client.resetAppSession();
+    this.client.resetTpaSession();
     this.hardReset();
 
     session.events.onTranscription((data) => {
