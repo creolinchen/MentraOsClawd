@@ -2,22 +2,13 @@
  * Mentra channel — self-contained plugin.
  *
  * Starts a TpaServer (MentraOS SDK) that connects directly to the glasses.
- * Transcription → state machine → OpenClaw agent dispatch → glasses display.
- * No separate app or HTTP server needed.
- *
- * Required config (set via `openclaw config set`):
- *   channels.mentra.mentraApiKey        — from console.mentra.glass
- *   channels.mentra.mentraPackageName   — from console.mentra.glass
- *
- * Optional config:
- *   channels.mentra.mentraServerPort    — TpaServer port (default 7010)
+ * Transcription -> state machine -> OpenClaw agent dispatch -> glasses display.
  */
 
 import { TpaServer } from "@mentra/sdk";
 import type { TpaSession } from "@mentra/sdk";
-import type { ChannelPlugin, PluginRuntime } from "openclaw/plugin-sdk";
+import type { ChannelPlugin } from "openclaw/plugin-sdk";
 import { randomUUID } from "node:crypto";
-import { getRuntime } from "./runtime.js";
 import { mentraOnboarding } from "./onboarding.js";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -37,7 +28,6 @@ const MS = {
   SILENCE: 2_000,
   POST_RESPONSE: 14_000,
   FOLLOW_UP_INITIAL: 6_000,
-  APPROVAL_AUTO_DENY: 10_000,
   SPINNER: 120,
 } as const;
 
@@ -60,7 +50,8 @@ export interface MentraAccount {
 // ── TpaServer + state machine ─────────────────────────────────────────────────
 
 class MentraG2Server extends TpaServer {
-  private readonly runtime: PluginRuntime;
+  private readonly channelRuntime: any;
+  private readonly cfg: any;
   private readonly accountId: string;
 
   private state: AppState = "IDLE";
@@ -84,11 +75,13 @@ class MentraG2Server extends TpaServer {
 
   constructor(
     serverConfig: { packageName: string; apiKey: string; port?: number },
-    runtime: PluginRuntime,
+    channelRuntime: any,
+    cfg: any,
     accountId: string
   ) {
     super(serverConfig);
-    this.runtime = runtime;
+    this.channelRuntime = channelRuntime;
+    this.cfg = cfg;
     this.accountId = accountId;
   }
 
@@ -177,7 +170,7 @@ class MentraG2Server extends TpaServer {
   // ── State transitions ─────────────────────────────────────────────────────────
 
   private transition(next: AppState): void {
-    console.log(`[mentra] ${this.state} → ${next}`);
+    console.log(`[mentra] ${this.state} -> ${next}`);
     this.state = next;
   }
 
@@ -316,64 +309,64 @@ class MentraG2Server extends TpaServer {
   // ── OpenClaw dispatch ─────────────────────────────────────────────────────────
 
   private async dispatchPrompt(prompt: string, requestId: string): Promise<void> {
-    const rt = this.runtime;
-    const { loadConfig } = rt.config;
-    const { resolveAgentRoute } = rt.channel.routing;
-    const { finalizeInboundContext, dispatchReplyWithBufferedBlockDispatcher } =
-      rt.channel.reply;
-    const { recordInboundSession, resolveStorePath } = rt.channel.session;
+    const cr = this.channelRuntime;
+    if (!cr) {
+      console.error("[mentra] channelRuntime not available — cannot dispatch");
+      if (this.activeRequestId === requestId) this.gotoIdle();
+      return;
+    }
 
-    const cfg = loadConfig();
+    const cfg = this.cfg;
     const sessionKey = randomUUID();
 
-    const route = resolveAgentRoute({
-      cfg,
-      channel: CHANNEL_ID,
-      accountId: this.accountId,
-      peer: { kind: "direct", id: sessionKey },
-    });
-
-    const inboundCtx = finalizeInboundContext({
-      Body: prompt,
-      BodyForAgent: prompt,
-      RawBody: prompt,
-      CommandBody: prompt,
-      From: `mentra:${sessionKey}`,
-      To: sessionKey,
-      SessionKey: route.sessionKey,
-      AccountId: route.accountId,
-      ChatType: "direct",
-      ConversationLabel: `mentra:${sessionKey}`,
-      SenderName: "User",
-      SenderId: sessionKey,
-      Provider: CHANNEL_ID,
-      Surface: CHANNEL_ID,
-      WasMentioned: true,
-      MessageSid: `mentra-${Date.now()}`,
-      Timestamp: Date.now(),
-      CommandAuthorized: true,
-      OriginatingChannel: CHANNEL_ID,
-      OriginatingTo: sessionKey,
-    });
-
-    const storePath = resolveStorePath(undefined, { agentId: route.agentId });
-    await recordInboundSession({
-      storePath,
-      sessionKey: route.sessionKey,
-      ctx: inboundCtx,
-      updateLastRoute: {
-        sessionKey: route.sessionKey,
-        channel: CHANNEL_ID,
-        to: sessionKey,
-        accountId: route.accountId,
-      },
-      onRecordError: (err: unknown) => {
-        console.warn(`[mentra] Session record error: ${String(err)}`);
-      },
-    });
-
     try {
-      await dispatchReplyWithBufferedBlockDispatcher({
+      const route = cr.routing.resolveAgentRoute({
+        cfg,
+        channel: CHANNEL_ID,
+        accountId: this.accountId,
+        peer: { kind: "direct", id: sessionKey },
+      });
+
+      const inboundCtx = cr.reply.finalizeInboundContext({
+        Body: prompt,
+        BodyForAgent: prompt,
+        RawBody: prompt,
+        CommandBody: prompt,
+        From: `mentra:${sessionKey}`,
+        To: sessionKey,
+        SessionKey: route.sessionKey,
+        AccountId: route.accountId,
+        ChatType: "direct",
+        ConversationLabel: `mentra:${sessionKey}`,
+        SenderName: "User",
+        SenderId: sessionKey,
+        Provider: CHANNEL_ID,
+        Surface: CHANNEL_ID,
+        WasMentioned: true,
+        MessageSid: `mentra-${Date.now()}`,
+        Timestamp: Date.now(),
+        CommandAuthorized: true,
+        OriginatingChannel: CHANNEL_ID,
+        OriginatingTo: sessionKey,
+      });
+
+      const storePath = cr.session.resolveStorePath(undefined, { agentId: route.agentId });
+      await cr.session.recordInboundSession({
+        storePath,
+        sessionKey: route.sessionKey,
+        ctx: inboundCtx,
+        updateLastRoute: {
+          sessionKey: route.sessionKey,
+          channel: CHANNEL_ID,
+          to: sessionKey,
+          accountId: route.accountId,
+        },
+        onRecordError: (err: unknown) => {
+          console.warn(`[mentra] Session record error: ${String(err)}`);
+        },
+      });
+
+      await cr.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx: inboundCtx,
         cfg,
         dispatcherOptions: {
@@ -389,7 +382,7 @@ class MentraG2Server extends TpaServer {
         },
       });
     } catch (err) {
-      console.error(`[mentra] Dispatch threw: ${String(err)}`);
+      console.error(`[mentra] dispatchPrompt threw: ${String(err)}`);
       if (this.activeRequestId === requestId) this.gotoIdle();
     }
   }
@@ -533,39 +526,58 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
       const account = ctx.account as MentraAccount;
 
       if (!account.configured) {
-        throw new Error(
-          "[mentra] Not configured. Run:\n" +
-            "  openclaw config set channels.mentra.mentraApiKey YOUR_KEY\n" +
-            "  openclaw config set channels.mentra.mentraPackageName YOUR_PACKAGE_NAME\n" +
-            "Then restart the gateway."
-        );
+        ctx.log?.warn?.("[mentra] Not configured — skipping TpaServer start");
+        await new Promise<void>((resolve) => {
+          if (ctx.abortSignal.aborted) { resolve(); return; }
+          ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return;
       }
 
-      ctx.log?.info(
-        `[mentra] Starting TpaServer (port ${account.mentraServerPort}) for ${account.mentraPackageName}`
+      const channelRuntime = (ctx as any).channelRuntime ?? null;
+      if (!channelRuntime) {
+        ctx.log?.warn?.("[mentra] channelRuntime not available — dispatch will be disabled");
+      }
+
+      ctx.log?.info?.(
+        `[mentra] Starting TpaServer on port ${account.mentraServerPort} for ${account.mentraPackageName}`
       );
 
-      const server = new MentraG2Server(
-        {
-          packageName: account.mentraPackageName,
-          apiKey: account.mentraApiKey,
-          port: account.mentraServerPort,
-          serverUrl: account.mentraServerUrl || undefined,
-        },
-        getRuntime(),
-        account.accountId
-      );
+      let server: MentraG2Server | null = null;
 
-      await server.start();
-      ctx.log?.info("[mentra] TpaServer running — waiting for glasses to connect");
+      try {
+        server = new MentraG2Server(
+          {
+            packageName: account.mentraPackageName,
+            apiKey: account.mentraApiKey,
+            port: account.mentraServerPort,
+          },
+          channelRuntime,
+          ctx.cfg,
+          account.accountId
+        );
+
+        await server.start();
+        ctx.log?.info?.("[mentra] TpaServer running — waiting for glasses to connect");
+      } catch (err) {
+        ctx.log?.error?.(`[mentra] TpaServer failed to start: ${String(err)}`);
+        // Don't crash the gateway — just wait for abort
+      }
 
       await new Promise<void>((resolve) => {
         if (ctx.abortSignal.aborted) { resolve(); return; }
         ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
       });
 
-      await server.stop();
-      ctx.log?.info("[mentra] TpaServer stopped");
+      if (server) {
+        try {
+          await server.stop();
+        } catch (err) {
+          ctx.log?.warn?.(`[mentra] TpaServer stop error: ${String(err)}`);
+        }
+      }
+
+      ctx.log?.info?.("[mentra] TpaServer stopped");
     },
   },
 };
