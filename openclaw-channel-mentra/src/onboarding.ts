@@ -57,13 +57,10 @@ export const mentraOnboarding: ChannelOnboardingAdapter = {
     }
 
     await prompter.note(
-      "Your TpaServer must be publicly reachable by MentraOS.
-" +
-      "Use ngrok or similar: ngrok http " + serverPort + "
-" +
-      "Then copy the https://... URL and enter it below.
-" +
-      "Also set this URL as the Server URL in console.mentra.glass.",
+      "Your TpaServer must be publicly reachable by MentraOS.\n" +
+        "Run: ngrok http " + serverPort + "\n" +
+        "Then copy the https://... URL below.\n" +
+        "Also set this URL in console.mentra.glass as your app's Server URL.",
       "Public Server URL required"
     );
 
@@ -94,11 +91,9 @@ export const mentraOnboarding: ChannelOnboardingAdapter = {
     };
 
     await prompter.note(
-      "IMPORTANT: Go to console.mentra.glass and set your app's
-" +
-      "Server URL to: " + serverUrl.trim() + "
-" +
-      "This tells MentraOS where to connect.",
+      "IMPORTANT: Go to console.mentra.glass and set your app's\n" +
+        "Server URL to: " + serverUrl.trim() + "\n" +
+        "This tells MentraOS where to connect.",
       "Set URL in Mentra Console"
     );
 
