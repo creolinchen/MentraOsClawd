@@ -8,22 +8,6 @@
   "main": "dist/index.js",
   "configSchema": {},
   "channels": [
-    {
-      "id": "mentra",
-      "name": "MentraOS Smart Glasses",
-      "description": "Voice input via G2 microphone, text output on G2 display"
-    }
-  ],
-  "config": {
-    "channels.mentra.port": {
-      "type": "number",
-      "default": 4747,
-      "description": "HTTP port the plugin listens on for inbound messages from the MentraOS App"
-    },
-    "channels.mentra.callbackUrl": {
-      "type": "string",
-      "default": "http://localhost:3000/response",
-      "description": "URL the plugin POSTs agent responses to"
-    }
-  }
+    "mentra"
+  ]
 }
