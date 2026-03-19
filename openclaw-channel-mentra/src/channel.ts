@@ -123,9 +123,8 @@ async function subscribeExecApprovals(
 ): Promise<void> {
   // Token: try multiple config paths, then env var
   const token: string =
+    cfg?.gateway?.auth?.token ??
     cfg?.gateway?.operatorToken ??
-    cfg?.auth?.key ??
-    cfg?.apiKey ??
     process.env.OPENCLAW_OPERATOR_TOKEN ??
     "";
 
