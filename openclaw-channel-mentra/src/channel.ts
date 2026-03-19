@@ -113,6 +113,91 @@ async function dispatchToOpenClaw(
   }
 }
 
+// ── Exec Approval WebSocket subscription ──────────────────────────────────────
+
+async function subscribeExecApprovals(
+  controlPort: number,
+  cfg: any,
+  abortSignal: AbortSignal,
+  log: any
+): Promise<void> {
+  // Token: try multiple config paths, then env var
+  const token: string =
+    cfg?.gateway?.operatorToken ??
+    cfg?.auth?.key ??
+    cfg?.apiKey ??
+    process.env.OPENCLAW_OPERATOR_TOKEN ??
+    "";
+
+  const wsPort: number = cfg?.gateway?.wsPort ?? 18789;
+
+  if (!token) {
+    log?.warn?.("[mentra] no operator token found — exec approval WS skipped. Set OPENCLAW_OPERATOR_TOKEN or openclaw config gateway.operatorToken");
+    return;
+  }
+
+  function connect(): void {
+    if (abortSignal.aborted) return;
+
+    const ws = new WebSocket(`ws://127.0.0.1:${wsPort}/ws`);
+
+    ws.addEventListener("open", () => {
+      log?.info?.("[mentra] approval WS connected");
+      ws.send(JSON.stringify({
+        type: "req", id: "auth", method: "connect",
+        params: {
+          token,
+          role: "operator",
+          scopes: ["operator.read", "operator.write", "operator.approvals"],
+          minProtocol: 3, maxProtocol: 3,
+        },
+      }));
+    });
+
+    ws.addEventListener("message", async (event: MessageEvent) => {
+      try {
+        const frame = JSON.parse(event.data as string);
+        if (frame.type !== "event" || frame.event !== "exec.approval.requested") return;
+
+        const { id, command, cwd, description } = frame.payload as {
+          id: string; command?: string; cwd?: string; description?: string;
+        };
+        const info = description ?? (cwd ? `${command ?? ""} (in ${cwd})` : (command ?? ""));
+
+        const res = await fetch(`http://127.0.0.1:${controlPort}/approval`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command: command ?? "", info }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const { decision } = await res.json() as { decision: string };
+
+        ws.send(JSON.stringify({
+          type: "req", id: `resolve-${id}`, method: "exec.approval.resolve",
+          params: { id, decision },
+        }));
+      } catch (err) {
+        log?.error?.(`[mentra] approval WS message error: ${String(err)}`);
+      }
+    });
+
+    ws.addEventListener("close", () => {
+      if (!abortSignal.aborted) {
+        log?.warn?.("[mentra] approval WS closed — reconnecting in 5s");
+        setTimeout(connect, 5_000);
+      }
+    });
+
+    ws.addEventListener("error", () => {
+      // close event will handle reconnect
+    });
+
+    abortSignal.addEventListener("abort", () => ws.close(), { once: true });
+  }
+
+  connect();
+}
+
 // ── ChannelPlugin ─────────────────────────────────────────────────────────────
 
 export const mentraChannel: ChannelPlugin<MentraAccount> = {
@@ -234,32 +319,10 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
 
       ctx.log?.info?.(`[mentra] control port allocated: ${controlPort}`);
 
-      // ── Subscribe to exec approval events (channelRuntime) ────────────────────
+      // ── Subscribe to exec approval events via gateway WebSocket ─────────────
+      // Protocol: JSON-RPC over ws://localhost:18789/ws (operator role)
 
-      const execApi = (cr as any)?.exec ?? (ctx as any)?.execApprovals ?? (cr as any)?.approvals;
-      if (execApi?.onRequest) {
-        execApi.onRequest(async (approval: { id: string; command?: string; description?: string; info?: string }) => {
-          try {
-            const res = await fetch(`http://127.0.0.1:${controlPort}/approval`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                command: approval.command ?? approval.description ?? "",
-                info: approval.info ?? approval.description ?? approval.command ?? "",
-              }),
-              signal: AbortSignal.timeout(15_000),
-            });
-            const { decision } = await res.json() as { decision: string };
-            await execApi.resolve?.({ id: approval.id, decision });
-          } catch (err) {
-            ctx.log?.error?.(`[mentra] approval forward error: ${String(err)}`);
-            await execApi.resolve?.({ id: approval.id, decision: "denied" }).catch(() => {});
-          }
-        });
-        ctx.log?.info?.("[mentra] exec approval handler registered");
-      } else {
-        ctx.log?.warn?.("[mentra] exec approval API not available on channelRuntime — approvals will not reach glasses");
-      }
+      void subscribeExecApprovals(controlPort, ctx.cfg, ctx.abortSignal, ctx.log);
 
       // ── Free port before spawning ─────────────────────────────────────────────
 
