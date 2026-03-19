@@ -1,0 +1,43 @@
+{
+  "name": "Claw",
+  "description": "Eine Verbindung zur OpenClaw KI",
+  "publicUrl": "https://cochleate-potently-arnold.ngrok-free.dev",
+  "logoURL": "https://mentra-store-cdn.mentraglass.com/mini_app_assets/OpenClaw/1772559117068-lobster-10.webp",
+  "appType": "background",
+  "permissions": [
+    {
+      "type": "MICROPHONE",
+      "description": "Access to microphone for voice input and audio processing"
+    },
+    {
+      "type": "LOCATION",
+      "description": ""
+    },
+    {
+      "type": "CALENDAR",
+      "description": ""
+    },
+    {
+      "type": "POST_NOTIFICATIONS",
+      "description": ""
+    },
+    {
+      "type": "READ_NOTIFICATIONS",
+      "description": ""
+    },
+    {
+      "type": "BACKGROUND_LOCATION",
+      "description": ""
+    }
+  ],
+  "settings": [
+    {
+      "type": "toggle",
+      "key": "auto_approval",
+      "label": "Exec-Anfragen automatisch genehmigen",
+      "defaultValue": false
+    }
+  ],
+  "tools": [],
+  "webviewURL": "https://cochleate-potently-arnold.ngrok-free.dev/webview"
+}
