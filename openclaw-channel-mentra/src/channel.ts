@@ -84,6 +84,9 @@ async function dispatchToOpenClaw(
       },
     });
 
+    // Wait for the dispatcher to fully complete — don't resolve on first block
+    // (first blocks are often intermediate tool narration, not the final answer)
+    let lastText = "";
     return await new Promise<string>((resolve) => {
       cr.reply
         .dispatchReplyWithBufferedBlockDispatcher({
@@ -92,17 +95,18 @@ async function dispatchToOpenClaw(
           dispatcherOptions: {
             deliver: async (payload: any) => {
               const text: string = payload.text ?? payload.body ?? "";
-              if (text) resolve(text);
+              if (text) lastText = text;
             },
             onError: (err: unknown) => {
               console.error(`[mentra] dispatch error: ${String(err)}`);
-              resolve("");
+              resolve(lastText);
             },
           },
         })
+        .then(() => resolve(lastText))
         .catch((err: unknown) => {
           console.error(`[mentra] dispatch threw: ${String(err)}`);
-          resolve("");
+          resolve(lastText);
         });
     });
   } catch (err) {
