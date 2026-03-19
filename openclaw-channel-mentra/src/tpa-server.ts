@@ -53,7 +53,7 @@ class MentraApp extends TpaServer {
   private followUpCount = 0;
   private activeRequestId: string | null = null;
   private autoApproval = false;
-  private repromptAnyQuestion = false;
+  private repromptMode: "off" | "end" | "anywhere" = "off";
 
   // Approval
   private approvalResolve: ((decision: "approved" | "denied") => void) | null = null;
@@ -90,10 +90,10 @@ class MentraApp extends TpaServer {
       console.log(`[mentra] auto_approval -> ${val}`);
     });
 
-    this.repromptAnyQuestion = session.settings.get<boolean>("reprompt_any_question", false);
-    session.settings.onValueChange("reprompt_any_question", (val: boolean) => {
-      this.repromptAnyQuestion = val;
-      console.log(`[mentra] reprompt_any_question -> ${val}`);
+    this.repromptMode = (session.settings.get<string>("reprompt_mode", "off") as "off" | "end" | "anywhere");
+    session.settings.onValueChange("reprompt_mode", (val: string) => {
+      this.repromptMode = val as "off" | "end" | "anywhere";
+      console.log(`[mentra] reprompt_mode -> ${val}`);
     });
 
     session.events.onTranscription((data) => {
@@ -407,7 +407,10 @@ class MentraApp extends TpaServer {
 
     this.display(filtered);
 
-    const hasQuestion = this.repromptAnyQuestion ? filtered.includes("?") : filtered.endsWith("?");
+    const hasQuestion =
+      this.repromptMode === "anywhere" ? filtered.includes("?") :
+      this.repromptMode === "end"      ? filtered.endsWith("?") :
+      false;
     if (hasQuestion && this.followUpCount < MAX_FOLLOW_UPS) {
       this.followUpCount++;
       this.gotoListening("", "...", MS.FOLLOW_UP_INITIAL);
