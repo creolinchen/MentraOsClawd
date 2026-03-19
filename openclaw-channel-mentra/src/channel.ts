@@ -219,6 +219,48 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
 
       ctx.log?.info?.(`[mentra] IPC server on port ${ipcPort}`);
 
+      // ── Allocate control port (channel → child IPC for approvals) ────────────
+
+      const controlPort = await new Promise<number>((resolve, reject) => {
+        const tmp = createServer();
+        tmp.listen(0, "127.0.0.1", () => {
+          const addr = tmp.address();
+          tmp.close(() => {
+            if (addr && typeof addr === "object") resolve(addr.port);
+            else reject(new Error("control port alloc failed"));
+          });
+        });
+      });
+
+      ctx.log?.info?.(`[mentra] control port allocated: ${controlPort}`);
+
+      // ── Subscribe to exec approval events (channelRuntime) ────────────────────
+
+      const execApi = (cr as any)?.exec ?? (ctx as any)?.execApprovals ?? (cr as any)?.approvals;
+      if (execApi?.onRequest) {
+        execApi.onRequest(async (approval: { id: string; command?: string; description?: string; info?: string }) => {
+          try {
+            const res = await fetch(`http://127.0.0.1:${controlPort}/approval`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                command: approval.command ?? approval.description ?? "",
+                info: approval.info ?? approval.description ?? approval.command ?? "",
+              }),
+              signal: AbortSignal.timeout(15_000),
+            });
+            const { decision } = await res.json() as { decision: string };
+            await execApi.resolve?.({ id: approval.id, decision });
+          } catch (err) {
+            ctx.log?.error?.(`[mentra] approval forward error: ${String(err)}`);
+            await execApi.resolve?.({ id: approval.id, decision: "denied" }).catch(() => {});
+          }
+        });
+        ctx.log?.info?.("[mentra] exec approval handler registered");
+      } else {
+        ctx.log?.warn?.("[mentra] exec approval API not available on channelRuntime — approvals will not reach glasses");
+      }
+
       // ── Free port before spawning ─────────────────────────────────────────────
 
       try {
@@ -234,6 +276,7 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
         env: {
           ...process.env,
           IPC_PORT: String(ipcPort),
+          CONTROL_PORT: String(controlPort),
           MENTRA_PACKAGE_NAME: account.mentraPackageName,
           MENTRA_API_KEY: account.mentraApiKey,
           MENTRA_SERVER_PORT: String(account.mentraServerPort),
