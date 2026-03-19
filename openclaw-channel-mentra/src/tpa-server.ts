@@ -152,7 +152,7 @@ class MentraApp extends TpaServer {
     this.stopSpinner();
     this.promptAccumulator = initialPrompt;
     this.transition("LISTENING");
-    this.display("Hey Mentra");
+    this.display(initialPrompt ? `"${initialPrompt}" ...` : "...");
     if (followUpTimeout > 0) {
       this.timers.followUp = setTimeout(() => {
         if (this.state === "LISTENING" && this.promptAccumulator === "") this.gotoIdle();
@@ -165,9 +165,10 @@ class MentraApp extends TpaServer {
     this.clearTimer("silence");
     this.clearTimer("followUp");
     this.transition("PROCESSING");
-    this.startSpinner();
     const prompt = this.promptAccumulator.trim();
     this.promptAccumulator = "";
+    this.display(`"${prompt}"`);
+    this.startSpinner();
     if (!prompt) { this.gotoIdle(); return; }
     const requestId = randomUUID();
     this.activeRequestId = requestId;
@@ -195,7 +196,13 @@ class MentraApp extends TpaServer {
       case "LISTENING":
         this.resetSilenceTimer();
         this.clearTimer("followUp");
-        if (isFinal) this.promptAccumulator += (this.promptAccumulator ? " " : "") + text.trim();
+        if (isFinal) {
+          this.promptAccumulator += (this.promptAccumulator ? " " : "") + text.trim();
+          this.display(`"${this.promptAccumulator}" ...`);
+        } else {
+          const preview = this.promptAccumulator ? `${this.promptAccumulator} ${text.trim()}` : text.trim();
+          this.display(`"${preview}"`);
+        }
         break;
       case "PROCESSING":
         if (isFinal && lower.includes("mentra") && this.hasGreeting(lower)) {
