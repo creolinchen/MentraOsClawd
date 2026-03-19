@@ -33,6 +33,7 @@ const MS = {
   SPINNER: 120,
   APPROVAL: 10_000,
   APPROVAL_INFO_EXTEND: 5_000,
+  APPROVAL_RESPONSE_BONUS: 3_000,
 } as const;
 
 const MAX_FOLLOW_UPS = 10;
@@ -58,6 +59,12 @@ class MentraApp extends TpaServer {
   private approvalCommand = "";
   private approvalInfo = "";
 
+  // Pending AI response that arrived while approval was active
+  private pendingResponse: { text: string; displayMs: number } | null = null;
+  // Track when TRIGGERED started and what text is showing (for remaining time calc)
+  private triggeredAt = 0;
+  private lastResponseText = "";
+
   private timers: {
     silence?: ReturnType<typeof setTimeout>;
     trigger?: ReturnType<typeof setTimeout>;
@@ -76,7 +83,6 @@ class MentraApp extends TpaServer {
     this.session = session;
     this.hardReset();
 
-    // Read auto-approval setting from MentraOS app settings
     this.autoApproval = session.settings.get<boolean>("auto_approval", false);
     session.settings.onValueChange("auto_approval", (val: boolean) => {
       this.autoApproval = val;
@@ -132,7 +138,9 @@ class MentraApp extends TpaServer {
     this.greetingWord = "";
     this.followUpCount = 0;
     this.activeRequestId = null;
-    // Deny any pending approval
+    this.pendingResponse = null;
+    this.lastResponseText = "";
+    this.triggeredAt = 0;
     if (this.approvalResolve) { this.approvalResolve("denied"); this.approvalResolve = null; }
   }
 
@@ -149,6 +157,8 @@ class MentraApp extends TpaServer {
     this.promptAccumulator = "";
     this.greetingWord = "";
     this.followUpCount = 0;
+    this.pendingResponse = null;
+    this.lastResponseText = "";
     this.transition("IDLE");
     this.display("");
   }
@@ -173,13 +183,14 @@ class MentraApp extends TpaServer {
     this.stopSpinner();
     this.promptAccumulator = initialPrompt;
     this.transition("LISTENING");
-    this.display(initialPrompt ? `"${initialPrompt}" ...` : (headerText || "..."));
+    this.display(initialPrompt ? `"${initialPrompt}"` : (headerText || "..."));
     if (followUpTimeout > 0) {
       this.timers.followUp = setTimeout(() => {
         if (this.state === "LISTENING" && this.promptAccumulator === "") this.gotoIdle();
       }, followUpTimeout);
     }
-    this.resetSilenceTimer();
+    // Only start silence timer if we already have content — otherwise wait for first speech
+    if (initialPrompt) this.resetSilenceTimer();
   }
 
   private gotoProcessing(): void {
@@ -197,7 +208,13 @@ class MentraApp extends TpaServer {
   }
 
   private gotoApproving(command: string, info: string): void {
-    // Interrupt whatever state we're in
+    // If we're currently showing an AI response, save it with remaining time + bonus
+    if (this.state === "TRIGGERED" && this.lastResponseText) {
+      const elapsed = Date.now() - this.triggeredAt;
+      const remaining = Math.max(0, MS.POST_RESPONSE - elapsed);
+      this.pendingResponse = { text: this.lastResponseText, displayMs: remaining + MS.APPROVAL_RESPONSE_BONUS };
+    }
+
     this.clearTimer("silence");
     this.clearTimer("followUp");
     this.clearTimer("trigger");
@@ -220,13 +237,28 @@ class MentraApp extends TpaServer {
     this.clearTimer("approval");
     const resolve = this.approvalResolve;
     this.approvalResolve = null;
-    // Return to PROCESSING (spinner) if still waiting for AI response, else IDLE
-    if (this.activeRequestId) {
+
+    // If an AI response arrived while we were approving, show it now
+    if (this.pendingResponse) {
+      const { text, displayMs } = this.pendingResponse;
+      this.pendingResponse = null;
+      this.activeRequestId = null;
+      this.stopSpinner();
+      this.lastResponseText = text;
+      this.triggeredAt = Date.now();
+      this.display(text);
+      this.transition("TRIGGERED");
+      this.timers.postResponse = setTimeout(() => {
+        if (this.state === "TRIGGERED") this.gotoIdle();
+      }, displayMs);
+    } else if (this.activeRequestId) {
+      // Still waiting for AI response — go back to spinner
       this.transition("PROCESSING");
       this.startSpinner();
     } else {
       this.gotoIdle();
     }
+
     resolve?.(decision);
   }
 
@@ -243,7 +275,6 @@ class MentraApp extends TpaServer {
       return "approved";
     }
     return new Promise<"approved" | "denied">((resolve) => {
-      // Deny any already-pending approval
       if (this.approvalResolve) { this.approvalResolve("denied"); }
       this.approvalResolve = resolve;
       this.gotoApproving(command, info);
@@ -268,7 +299,7 @@ class MentraApp extends TpaServer {
         this.clearTimer("followUp");
         if (isFinal) {
           this.promptAccumulator += (this.promptAccumulator ? " " : "") + text.trim();
-          this.display(`"${this.promptAccumulator}" ...`);
+          this.display(`"${this.promptAccumulator}"`);
         } else {
           const preview = this.promptAccumulator ? `${this.promptAccumulator} ${text.trim()}` : text.trim();
           this.display(`"${preview}"`);
@@ -281,7 +312,7 @@ class MentraApp extends TpaServer {
         }
         break;
       case "APPROVING":
-        // Only act on final transcriptions, never display spoken text
+        // No live text display — only act on final keywords
         if (isFinal) this.handleApproving(lower);
         break;
     }
@@ -289,16 +320,14 @@ class MentraApp extends TpaServer {
 
   private handleApproving(lower: string): void {
     const isJa = lower.includes("ja") || lower.includes("yup") || lower.includes("yes") || lower.includes("jap");
-    const isNein = lower.includes("nein") || lower.includes("nö") || lower.includes("ne ") || lower === "ne"
-      || lower.includes("no") || lower.includes("ablehnen");
-    const isInfo = lower.includes("info") || lower.includes("information") || lower.includes("was ist") || lower.includes("details");
+    const isNein = /\bnein\b|\bnö\b|\bne\b|\bno\b/.test(lower) || lower.includes("ablehnen");
+    const isInfo = lower.includes("info") || lower.includes("details") || lower.includes("was ist");
 
     if (isJa) {
       this.resolveCurrentApproval("approved");
     } else if (isNein) {
       this.resolveCurrentApproval("denied");
     } else if (isInfo) {
-      // Show command details and extend timer by 5s
       this.clearTimer("approval");
       const detail = this.approvalInfo || this.approvalCommand || "Keine Details";
       this.display(`[A] ${detail}`);
@@ -306,7 +335,7 @@ class MentraApp extends TpaServer {
         if (this.state === "APPROVING") this.resolveCurrentApproval("denied");
       }, MS.APPROVAL_INFO_EXTEND);
     }
-    // All other speech: silently ignored while [A] is active
+    // All other speech silently ignored
   }
 
   private handleIdle(lower: string, original: string): void {
@@ -350,6 +379,12 @@ class MentraApp extends TpaServer {
   }
 
   private handleAgentResponse(text: string): void {
+    // If approval is active, queue the response for after resolution
+    if (this.state === "APPROVING") {
+      this.pendingResponse = { text, displayMs: MS.POST_RESPONSE + MS.APPROVAL_RESPONSE_BONUS };
+      return;
+    }
+
     this.activeRequestId = null;
     this.stopSpinner();
     if (text) this.display(text);
@@ -359,6 +394,8 @@ class MentraApp extends TpaServer {
       this.gotoListening("", "...", MS.FOLLOW_UP_INITIAL);
     } else {
       this.followUpCount = 0;
+      this.lastResponseText = text;
+      this.triggeredAt = Date.now();
       this.transition("TRIGGERED");
       this.timers.postResponse = setTimeout(() => { if (this.state === "TRIGGERED") this.gotoIdle(); }, MS.POST_RESPONSE);
     }
