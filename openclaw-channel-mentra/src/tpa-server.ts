@@ -1,12 +1,15 @@
 /**
  * tpa-server.ts — läuft als eigener Bun-Prozess, gestartet vom OpenClaw Plugin.
  * Kommuniziert mit dem Parent via HTTP-IPC (POST /dispatch).
+ * Empfängt Approval-Anfragen vom Parent via Control-Server (POST /approval).
  */
 import { TpaServer } from "@mentra/sdk";
 import type { TpaSession } from "@mentra/sdk";
+import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 
 const IPC_URL = `http://127.0.0.1:${process.env.IPC_PORT}`;
+const CONTROL_PORT = parseInt(process.env.CONTROL_PORT ?? "0", 10);
 const PACKAGE_NAME = process.env.MENTRA_PACKAGE_NAME!;
 const API_KEY = process.env.MENTRA_API_KEY!;
 const SERVER_PORT = parseInt(process.env.MENTRA_SERVER_PORT ?? "7010", 10);
@@ -28,13 +31,15 @@ const MS = {
   POST_RESPONSE: 14_000,
   FOLLOW_UP_INITIAL: 6_000,
   SPINNER: 120,
+  APPROVAL: 10_000,
+  APPROVAL_INFO_EXTEND: 5_000,
 } as const;
 
 const MAX_FOLLOW_UPS = 10;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type MainState = "IDLE" | "TRIGGERED" | "LISTENING" | "PROCESSING";
+type MainState = "IDLE" | "TRIGGERED" | "LISTENING" | "PROCESSING" | "APPROVING";
 type AppState = MainState;
 
 // ── TpaServer ─────────────────────────────────────────────────────────────────
@@ -46,12 +51,19 @@ class MentraApp extends TpaServer {
   private greetingWord = "";
   private followUpCount = 0;
   private activeRequestId: string | null = null;
+  private autoApproval = false;
+
+  // Approval
+  private approvalResolve: ((decision: "approved" | "denied") => void) | null = null;
+  private approvalCommand = "";
+  private approvalInfo = "";
 
   private timers: {
     silence?: ReturnType<typeof setTimeout>;
     trigger?: ReturnType<typeof setTimeout>;
     postResponse?: ReturnType<typeof setTimeout>;
     followUp?: ReturnType<typeof setTimeout>;
+    approval?: ReturnType<typeof setTimeout>;
   } = {};
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
   private spinnerFrame = 0;
@@ -63,6 +75,13 @@ class MentraApp extends TpaServer {
   protected async onSession(session: TpaSession, _sid: string, _uid: string): Promise<void> {
     this.session = session;
     this.hardReset();
+
+    // Read auto-approval setting from MentraOS app settings
+    this.autoApproval = session.settings.get<boolean>("auto_approval", false);
+    session.settings.onValueChange("auto_approval", (val: boolean) => {
+      this.autoApproval = val;
+      console.log(`[mentra] auto_approval -> ${val}`);
+    });
 
     session.events.onTranscription((data) => {
       this.onTranscription(data.text ?? "", data.isFinal ?? true);
@@ -113,6 +132,8 @@ class MentraApp extends TpaServer {
     this.greetingWord = "";
     this.followUpCount = 0;
     this.activeRequestId = null;
+    // Deny any pending approval
+    if (this.approvalResolve) { this.approvalResolve("denied"); this.approvalResolve = null; }
   }
 
   // ── States ────────────────────────────────────────────────────────────────────
@@ -175,9 +196,58 @@ class MentraApp extends TpaServer {
     void this.dispatchPrompt(prompt, requestId);
   }
 
+  private gotoApproving(command: string, info: string): void {
+    // Interrupt whatever state we're in
+    this.clearTimer("silence");
+    this.clearTimer("followUp");
+    this.clearTimer("trigger");
+    this.clearTimer("postResponse");
+    this.stopSpinner();
+    this.approvalCommand = command;
+    this.approvalInfo = info;
+    this.transition("APPROVING");
+    this.display("[A] Freigabe? Ja / Nein / Info");
+    this.clearTimer("approval");
+    this.timers.approval = setTimeout(() => {
+      if (this.state === "APPROVING") {
+        console.log("[mentra] approval timeout -> denied");
+        this.resolveCurrentApproval("denied");
+      }
+    }, MS.APPROVAL);
+  }
+
+  private resolveCurrentApproval(decision: "approved" | "denied"): void {
+    this.clearTimer("approval");
+    const resolve = this.approvalResolve;
+    this.approvalResolve = null;
+    // Return to PROCESSING (spinner) if still waiting for AI response, else IDLE
+    if (this.activeRequestId) {
+      this.transition("PROCESSING");
+      this.startSpinner();
+    } else {
+      this.gotoIdle();
+    }
+    resolve?.(decision);
+  }
+
   private resetSilenceTimer(): void {
     this.clearTimer("silence");
     this.timers.silence = setTimeout(() => { if (this.state === "LISTENING") this.gotoProcessing(); }, MS.SILENCE);
+  }
+
+  // ── Approval entry point (called from control server) ─────────────────────────
+
+  public async handleApprovalRequest(command: string, info: string): Promise<"approved" | "denied"> {
+    if (this.autoApproval) {
+      console.log(`[mentra] auto-approve: ${command}`);
+      return "approved";
+    }
+    return new Promise<"approved" | "denied">((resolve) => {
+      // Deny any already-pending approval
+      if (this.approvalResolve) { this.approvalResolve("denied"); }
+      this.approvalResolve = resolve;
+      this.gotoApproving(command, info);
+    });
   }
 
   // ── Transcription ─────────────────────────────────────────────────────────────
@@ -210,7 +280,33 @@ class MentraApp extends TpaServer {
           this.gotoTriggered(this.extractGreeting(lower));
         }
         break;
+      case "APPROVING":
+        // Only act on final transcriptions, never display spoken text
+        if (isFinal) this.handleApproving(lower);
+        break;
     }
+  }
+
+  private handleApproving(lower: string): void {
+    const isJa = lower.includes("ja") || lower.includes("yup") || lower.includes("yes") || lower.includes("jap");
+    const isNein = lower.includes("nein") || lower.includes("nö") || lower.includes("ne ") || lower === "ne"
+      || lower.includes("no") || lower.includes("ablehnen");
+    const isInfo = lower.includes("info") || lower.includes("information") || lower.includes("was ist") || lower.includes("details");
+
+    if (isJa) {
+      this.resolveCurrentApproval("approved");
+    } else if (isNein) {
+      this.resolveCurrentApproval("denied");
+    } else if (isInfo) {
+      // Show command details and extend timer by 5s
+      this.clearTimer("approval");
+      const detail = this.approvalInfo || this.approvalCommand || "Keine Details";
+      this.display(`[A] ${detail}`);
+      this.timers.approval = setTimeout(() => {
+        if (this.state === "APPROVING") this.resolveCurrentApproval("denied");
+      }, MS.APPROVAL_INFO_EXTEND);
+    }
+    // All other speech: silently ignored while [A] is active
   }
 
   private handleIdle(lower: string, original: string): void {
@@ -283,5 +379,29 @@ class MentraApp extends TpaServer {
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 const app = new MentraApp();
+
+// Control server: receives approval requests from parent process (channel.ts)
+if (CONTROL_PORT > 0) {
+  const controlServer = createServer(async (req, res) => {
+    if (req.method !== "POST" || req.url !== "/approval") {
+      res.writeHead(404); res.end(); return;
+    }
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const { command, info } = JSON.parse(Buffer.concat(chunks).toString()) as { command: string; info: string };
+      const decision = await app.handleApprovalRequest(command, info);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ decision }));
+    } catch (err) {
+      console.error("[mentra] control error:", err);
+      res.writeHead(500); res.end();
+    }
+  });
+  controlServer.listen(CONTROL_PORT, "127.0.0.1", () => {
+    console.log(`[mentra-child] Control server on port ${CONTROL_PORT}`);
+  });
+}
+
 await app.start();
 console.log(`[mentra-child] TpaServer started on port ${SERVER_PORT}`);
