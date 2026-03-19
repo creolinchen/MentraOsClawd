@@ -8,14 +8,15 @@ export const mentraOnboarding: ChannelOnboardingAdapter = {
   getStatus: async ({ cfg }: { cfg: any }) => {
     const apiKey = cfg?.channels?.mentra?.mentraApiKey;
     const packageName = cfg?.channels?.mentra?.mentraPackageName;
-    const configured = !!(apiKey && packageName);
+    const serverUrl = cfg?.channels?.mentra?.mentraServerUrl;
+    const configured = !!(apiKey && packageName && serverUrl);
 
     return {
       channel: CHANNEL_ID,
       configured,
       statusLines: configured
-        ? [`Package: ${packageName}`, "API key: configured"]
-        : ["Not configured — run: openclaw config setup mentra"],
+        ? [`Package: ${packageName}`, "API key: configured", `Server URL: ${serverUrl}`]
+        : ["Not configured — run: openclaw configure --section channels"],
       selectionHint: configured ? packageName : undefined,
     };
   },
@@ -40,7 +41,7 @@ export const mentraOnboarding: ChannelOnboardingAdapter = {
     });
 
     const useDefaultPort = await prompter.confirm({
-      message: `Use default TpaServer port 7010?`,
+      message: "Use default TpaServer port 7010?",
       initialValue: true,
     });
 
@@ -55,6 +56,29 @@ export const mentraOnboarding: ChannelOnboardingAdapter = {
       serverPort = parseInt(portStr.trim(), 10);
     }
 
+    await prompter.note(
+      "Your TpaServer must be publicly reachable by MentraOS.
+" +
+      "Use ngrok or similar: ngrok http " + serverPort + "
+" +
+      "Then copy the https://... URL and enter it below.
+" +
+      "Also set this URL as the Server URL in console.mentra.glass.",
+      "Public Server URL required"
+    );
+
+    const serverUrl = await prompter.text({
+      message: "Public server URL (e.g. https://abc123.ngrok-free.app)",
+      placeholder: "https://your-tunnel.ngrok-free.app",
+      initialValue: cfg?.channels?.mentra?.mentraServerUrl ?? "",
+      validate: (v: string) => {
+        const trimmed = v.trim();
+        if (!trimmed) return "Server URL is required";
+        if (!trimmed.startsWith("https://")) return "Must start with https://";
+        return undefined;
+      },
+    });
+
     const newCfg = {
       ...cfg,
       channels: {
@@ -64,9 +88,19 @@ export const mentraOnboarding: ChannelOnboardingAdapter = {
           mentraPackageName: packageName.trim(),
           mentraApiKey: apiKey.trim(),
           mentraServerPort: serverPort,
+          mentraServerUrl: serverUrl.trim(),
         },
       },
     };
+
+    await prompter.note(
+      "IMPORTANT: Go to console.mentra.glass and set your app's
+" +
+      "Server URL to: " + serverUrl.trim() + "
+" +
+      "This tells MentraOS where to connect.",
+      "Set URL in Mentra Console"
+    );
 
     await prompter.outro("Mentra channel configured. Restart the gateway to connect.");
 
