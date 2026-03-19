@@ -38,10 +38,15 @@
       "defaultValue": false
     },
     {
-      "type": "toggle",
-      "key": "reprompt_any_question",
-      "label": "Nachfragen bei jedem Fragezeichen (nicht nur am Ende)",
-      "defaultValue": false
+      "type": "select",
+      "key": "reprompt_mode",
+      "label": "Nachfragen bei Rückfragen",
+      "defaultValue": "off",
+      "options": [
+        { "label": "Aus", "value": "off" },
+        { "label": "Nur am Satzende (?)", "value": "end" },
+        { "label": "Überall im Satz", "value": "anywhere" }
+      ]
     }
   ],
   "tools": [],
