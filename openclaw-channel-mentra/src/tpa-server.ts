@@ -197,7 +197,7 @@ class MentraApp extends TpaServer {
     this.stopSpinner();
     this.promptAccumulator = initialPrompt;
     this.transition("LISTENING");
-    this.display(initialPrompt ? `"${initialPrompt}"` : (headerText || "..."));
+    this.display(initialPrompt ? `"${initialPrompt}"` : (headerText || ""));
     if (followUpTimeout > 0) {
       this.timers.followUp = setTimeout(() => {
         if (this.state === "LISTENING" && this.promptAccumulator === "") this.gotoIdle();
@@ -423,7 +423,7 @@ class MentraApp extends TpaServer {
       this.followUpCount++;
       // Let user read the answer for FOLLOW_UP_READ ms, then prompt for follow-up
       this.timers.postResponse = setTimeout(() => {
-        if (this.state === "TRIGGERED") this.gotoListening("", "...", MS.FOLLOW_UP_INITIAL);
+        if (this.state === "TRIGGERED") this.gotoListening("", "", MS.FOLLOW_UP_INITIAL);
       }, MS.FOLLOW_UP_READ);
     } else {
       this.followUpCount = 0;
