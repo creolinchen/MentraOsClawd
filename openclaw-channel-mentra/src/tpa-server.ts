@@ -391,7 +391,11 @@ class MentraApp extends TpaServer {
 
     this.activeRequestId = null;
     this.stopSpinner();
-    if (text) this.display(text);
+
+    // Empty response — go to idle, don't leave display in stale state
+    if (!text) { this.gotoIdle(); return; }
+
+    this.display(text);
 
     if (text.trimEnd().endsWith("?") && this.followUpCount < MAX_FOLLOW_UPS) {
       this.followUpCount++;
