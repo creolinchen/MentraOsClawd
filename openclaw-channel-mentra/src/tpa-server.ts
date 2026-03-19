@@ -53,6 +53,7 @@ class MentraApp extends TpaServer {
   private followUpCount = 0;
   private activeRequestId: string | null = null;
   private autoApproval = false;
+  private repromptAnyQuestion = false;
 
   // Approval
   private approvalResolve: ((decision: "approved" | "denied") => void) | null = null;
@@ -87,6 +88,12 @@ class MentraApp extends TpaServer {
     session.settings.onValueChange("auto_approval", (val: boolean) => {
       this.autoApproval = val;
       console.log(`[mentra] auto_approval -> ${val}`);
+    });
+
+    this.repromptAnyQuestion = session.settings.get<boolean>("reprompt_any_question", false);
+    session.settings.onValueChange("reprompt_any_question", (val: boolean) => {
+      this.repromptAnyQuestion = val;
+      console.log(`[mentra] reprompt_any_question -> ${val}`);
     });
 
     session.events.onTranscription((data) => {
@@ -400,7 +407,8 @@ class MentraApp extends TpaServer {
 
     this.display(filtered);
 
-    if (filtered.endsWith("?") && this.followUpCount < MAX_FOLLOW_UPS) {
+    const hasQuestion = this.repromptAnyQuestion ? filtered.includes("?") : filtered.endsWith("?");
+    if (hasQuestion && this.followUpCount < MAX_FOLLOW_UPS) {
       this.followUpCount++;
       this.gotoListening("", "...", MS.FOLLOW_UP_INITIAL);
     } else {
