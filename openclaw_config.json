@@ -36,6 +36,12 @@
       "key": "auto_approval",
       "label": "Exec-Anfragen automatisch genehmigen",
       "defaultValue": false
+    },
+    {
+      "type": "toggle",
+      "key": "reprompt_any_question",
+      "label": "Nachfragen bei jedem Fragezeichen (nicht nur am Ende)",
+      "defaultValue": false
     }
   ],
   "tools": [],
