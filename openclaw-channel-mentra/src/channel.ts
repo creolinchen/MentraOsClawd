@@ -84,6 +84,7 @@ async function dispatchToOpenClaw(
       },
     });
 
+    console.log(`[mentra] → prompt: ${prompt}`);
     // Wait for the dispatcher to fully complete — don't resolve on first block
     // (first blocks are often intermediate tool narration, not the final answer)
     let lastText = "";
@@ -103,7 +104,7 @@ async function dispatchToOpenClaw(
             },
           },
         })
-        .then(() => resolve(lastText))
+        .then(() => { console.log(`[mentra] ← response: ${lastText}`); resolve(lastText); })
         .catch((err: unknown) => {
           console.error(`[mentra] dispatch threw: ${String(err)}`);
           resolve(lastText);
