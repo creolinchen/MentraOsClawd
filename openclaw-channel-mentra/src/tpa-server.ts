@@ -48,6 +48,7 @@ type AppState = MainState;
 class MentraApp extends TpaServer {
   private state: AppState = "IDLE";
   private session: TpaSession | null = null;
+  private conversationSessionKey = "";
   private promptAccumulator = "";
   private greetingWord = "";
   private followUpCount = 0;
@@ -82,6 +83,7 @@ class MentraApp extends TpaServer {
 
   protected async onSession(session: TpaSession, _sid: string, _uid: string): Promise<void> {
     this.session = session;
+    this.conversationSessionKey = randomUUID();
     this.hardReset();
 
     this.autoApproval = session.settings.get<boolean>("auto_approval", false);
@@ -374,7 +376,7 @@ class MentraApp extends TpaServer {
       const res = await fetch(`${IPC_URL}/dispatch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, sessionKey: randomUUID(), accountId: ACCOUNT_ID }),
+        body: JSON.stringify({ prompt, sessionKey: this.conversationSessionKey, accountId: ACCOUNT_ID }),
         signal: AbortSignal.timeout(120_000),
       });
 
@@ -390,6 +392,7 @@ class MentraApp extends TpaServer {
   }
 
   private handleAgentResponse(text: string): void {
+    console.log(`[mentra] handleAgentResponse state=${this.state} textLen=${text.length}`);
     // If approval is active, queue the response for after resolution
     if (this.state === "APPROVING") {
       this.pendingResponse = { text, displayMs: MS.POST_RESPONSE + MS.APPROVAL_RESPONSE_BONUS };
@@ -400,10 +403,10 @@ class MentraApp extends TpaServer {
     this.stopSpinner();
 
     // Empty response — go to idle, don't leave display in stale state
-    if (!text) { this.gotoIdle(); return; }
+    if (!text) { console.log("[mentra] empty response -> idle"); this.gotoIdle(); return; }
 
     const filtered = this.filterResponse(text);
-    if (!filtered) { this.gotoIdle(); return; }
+    if (!filtered) { console.log("[mentra] filtered response empty -> idle"); this.gotoIdle(); return; }
 
     this.display(filtered);
 
