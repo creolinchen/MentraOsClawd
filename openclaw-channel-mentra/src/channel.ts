@@ -561,6 +561,11 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
         ctx.log?.info?.("[mentra] TpaServer running — waiting for glasses to connect");
       } catch (err) {
         ctx.log?.error?.(`[mentra] TpaServer failed to start: ${String(err)}`);
+        // Stop immediately to kill any internal retry loops
+        if (server) {
+          try { await server.stop(); } catch (_) {}
+          server = null;
+        }
         // Don't crash the gateway — just wait for abort
       }
 
