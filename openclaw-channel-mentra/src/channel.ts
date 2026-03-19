@@ -6,6 +6,7 @@
  */
 
 import type { ChannelPlugin } from "openclaw/plugin-sdk";
+import { getRuntime } from "./runtime.js";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -176,7 +177,9 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
         return;
       }
 
-      const cr = (ctx as any).channelRuntime ?? null;
+      const cr = (ctx as any).channelRuntime ?? (() => {
+        try { const rt = getRuntime(); return rt.channel ?? null; } catch (_) { return null; }
+      })();
       if (!cr) ctx.log?.warn?.("[mentra] channelRuntime unavailable — dispatch disabled");
 
       // ── IPC HTTP server (loopback only) ───────────────────────────────────────
