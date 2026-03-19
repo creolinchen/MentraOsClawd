@@ -29,6 +29,7 @@ const MS = {
   TRIGGERED_TIMEOUT: 5_000,
   SILENCE: 2_000,
   POST_RESPONSE: 14_000,
+  FOLLOW_UP_READ: 4_000,     // how long to show the answer before showing "..."
   FOLLOW_UP_INITIAL: 6_000,
   SPINNER: 120,
   APPROVAL: 10_000,
@@ -209,6 +210,7 @@ class MentraApp extends TpaServer {
   private gotoProcessing(): void {
     this.clearTimer("silence");
     this.clearTimer("followUp");
+    this.clearTimer("postResponse");
     this.transition("PROCESSING");
     const prompt = this.promptAccumulator.trim();
     this.promptAccumulator = "";
@@ -409,6 +411,9 @@ class MentraApp extends TpaServer {
     if (!filtered) { console.log("[mentra] filtered response empty -> idle"); this.gotoIdle(); return; }
 
     this.display(filtered);
+    this.lastResponseText = filtered;
+    this.triggeredAt = Date.now();
+    this.transition("TRIGGERED");
 
     const hasQuestion =
       this.repromptMode === "anywhere" ? filtered.includes("?") :
@@ -416,12 +421,12 @@ class MentraApp extends TpaServer {
       false;
     if (hasQuestion && this.followUpCount < MAX_FOLLOW_UPS) {
       this.followUpCount++;
-      this.gotoListening("", "...", MS.FOLLOW_UP_INITIAL);
+      // Let user read the answer for FOLLOW_UP_READ ms, then prompt for follow-up
+      this.timers.postResponse = setTimeout(() => {
+        if (this.state === "TRIGGERED") this.gotoListening("", "...", MS.FOLLOW_UP_INITIAL);
+      }, MS.FOLLOW_UP_READ);
     } else {
       this.followUpCount = 0;
-      this.lastResponseText = filtered;
-      this.triggeredAt = Date.now();
-      this.transition("TRIGGERED");
       this.timers.postResponse = setTimeout(() => { if (this.state === "TRIGGERED") this.gotoIdle(); }, MS.POST_RESPONSE);
     }
   }
