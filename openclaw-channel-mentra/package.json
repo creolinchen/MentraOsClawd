@@ -36,6 +36,9 @@
   "peerDependencies": {
     "openclaw": ">=2026.3.0"
   },
+  "dependencies": {
+    "@mentra/sdk": "^1.0.0"
+  },
   "devDependencies": {
     "openclaw": "^2026.3.13",
     "@types/node": "^20.0.0",
