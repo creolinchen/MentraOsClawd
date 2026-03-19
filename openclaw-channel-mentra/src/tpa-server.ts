@@ -395,18 +395,31 @@ class MentraApp extends TpaServer {
     // Empty response — go to idle, don't leave display in stale state
     if (!text) { this.gotoIdle(); return; }
 
-    this.display(text);
+    const filtered = this.filterResponse(text);
+    if (!filtered) { this.gotoIdle(); return; }
 
-    if (text.trimEnd().endsWith("?") && this.followUpCount < MAX_FOLLOW_UPS) {
+    this.display(filtered);
+
+    if (filtered.endsWith("?") && this.followUpCount < MAX_FOLLOW_UPS) {
       this.followUpCount++;
       this.gotoListening("", "...", MS.FOLLOW_UP_INITIAL);
     } else {
       this.followUpCount = 0;
-      this.lastResponseText = text;
+      this.lastResponseText = filtered;
       this.triggeredAt = Date.now();
       this.transition("TRIGGERED");
       this.timers.postResponse = setTimeout(() => { if (this.state === "TRIGGERED") this.gotoIdle(); }, MS.POST_RESPONSE);
     }
+  }
+
+  // ── Response filter ───────────────────────────────────────────────────────────
+
+  private filterResponse(text: string): string {
+    return text
+      .replace(/[*_`#|{}[\]()~]/g, "")   // strip markdown/bracket chars
+      .replace(/\n+/g, " ")               // newlines → space
+      .replace(/\s{2,}/g, " ")            // collapse multiple spaces
+      .trim();
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
