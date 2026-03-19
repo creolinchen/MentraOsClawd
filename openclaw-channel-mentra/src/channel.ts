@@ -53,6 +53,7 @@ export interface MentraAccount {
   mentraApiKey: string;
   mentraPackageName: string;
   mentraServerPort: number;
+  mentraServerUrl: string;
   configured: boolean;
 }
 
@@ -503,9 +504,11 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
       mentraApiKey: cfg?.channels?.mentra?.mentraApiKey ?? "",
       mentraPackageName: cfg?.channels?.mentra?.mentraPackageName ?? "",
       mentraServerPort: cfg?.channels?.mentra?.mentraServerPort ?? 7010,
+      mentraServerUrl: cfg?.channels?.mentra?.mentraServerUrl ?? "",
       configured: !!(
         cfg?.channels?.mentra?.mentraApiKey &&
-        cfg?.channels?.mentra?.mentraPackageName
+        cfg?.channels?.mentra?.mentraPackageName &&
+        cfg?.channels?.mentra?.mentraServerUrl
       ),
     }),
     isConfigured: (account) => account.configured,
@@ -547,6 +550,7 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
           packageName: account.mentraPackageName,
           apiKey: account.mentraApiKey,
           port: account.mentraServerPort,
+          serverUrl: account.mentraServerUrl || undefined,
         },
         getRuntime(),
         account.accountId
