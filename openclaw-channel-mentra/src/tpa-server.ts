@@ -145,14 +145,14 @@ class MentraApp extends TpaServer {
     this.timers.trigger = setTimeout(() => { if (this.state === "TRIGGERED") this.gotoIdle(); }, MS.TRIGGERED_TIMEOUT);
   }
 
-  private gotoListening(initialPrompt = "", followUpTimeout = 0): void {
+  private gotoListening(initialPrompt = "", headerText = "", followUpTimeout = 0): void {
     this.clearTimer("trigger");
     this.clearTimer("postResponse");
     this.clearTimer("followUp");
     this.stopSpinner();
     this.promptAccumulator = initialPrompt;
     this.transition("LISTENING");
-    this.display(initialPrompt ? `"${initialPrompt}" ...` : "...");
+    this.display(initialPrompt ? `"${initialPrompt}" ...` : (headerText || "..."));
     if (followUpTimeout > 0) {
       this.timers.followUp = setTimeout(() => {
         if (this.state === "LISTENING" && this.promptAccumulator === "") this.gotoIdle();
@@ -225,7 +225,7 @@ class MentraApp extends TpaServer {
   }
 
   private handleTriggered(lower: string): void {
-    if (lower.includes("mentra")) { this.gotoListening(); return; }
+    if (lower.includes("mentra")) { this.gotoListening("", `${this.greetingWord} mentra`); return; }
     const greeting = this.extractGreeting(lower);
     if (greeting) { this.gotoTriggered(greeting); return; }
     this.gotoIdle();
