@@ -214,6 +214,14 @@ export const mentraChannel: ChannelPlugin<MentraAccount> = {
 
       ctx.log?.info?.(`[mentra] IPC server on port ${ipcPort}`);
 
+      // ── Free port before spawning ─────────────────────────────────────────────
+
+      try {
+        const { execSync } = await import("node:child_process");
+        execSync(`fuser -k ${account.mentraServerPort}/tcp 2>/dev/null || true`, { stdio: "ignore" });
+        await new Promise((r) => setTimeout(r, 800));
+      } catch (_) {}
+
       // ── Spawn TpaServer child process ─────────────────────────────────────────
 
       const tpaScriptPath = join(__dirname, "tpa-server.ts");
