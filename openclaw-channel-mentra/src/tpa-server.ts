@@ -73,7 +73,7 @@ class MentraApp extends TpaServer {
       this.session = null;
     });
 
-    this.display("Mentra bereit");
+    this.display("");
   }
 
   // ── Display ──────────────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ class MentraApp extends TpaServer {
     this.greetingWord = "";
     this.followUpCount = 0;
     this.transition("IDLE");
-    this.display("Mentra bereit");
+    this.display("");
   }
 
   private gotoTriggered(greeting: string): void {
